@@ -56,6 +56,7 @@ import {
   FolderOpen,
   Link,
   Pencil,
+  RotateCw,
   Timer,
 } from 'lucide-react';
 import {
@@ -92,6 +93,7 @@ import { Phrase } from 'localisation/phrases';
 
 interface IProps {
   videos: RendererVideo[];
+  instantReplayPath?: string; // Instant replay takes precedence over the videos prop if present.
   categoryState: RendererVideo[];
   persistentProgress: RefObject<number>;
   config: ConfigurationSchema;
@@ -100,7 +102,7 @@ interface IProps {
 }
 
 const ipc = window.electron.ipcRenderer;
-const playbackRates = [0.25, 0.5, 1, 2];
+const playbackRates = [2, 1, 0.25, 0.5];
 const style = { backgroundColor: 'black' };
 
 const sliderBaseSx = {
@@ -140,12 +142,13 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
     appState,
     setAppState,
     categoryState,
+    instantReplayPath,
   } = props;
 
   const { playing, multiPlayerMode, language, selectedVideos, storageFilter } =
     appState;
 
-  if (videos.length < 1 || videos.length > 4) {
+  if (!instantReplayPath && (videos.length < 1 || videos.length > 4)) {
     // Protect against stupid programmer errors.
     throw new Error('VideoPlayer should only be passed up to 4 videos');
   }
@@ -207,29 +210,36 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
   // We show a progress spinner until the video is ready to play.
   const [spinner, setSpinner] = useState<boolean>(true);
 
+  // Make the duration and progress show refresh state.
+  const [refreshingInstantReplay, setRefreshingInstantReplay] =
+    useState<boolean>(false);
+
   // On the initial seek we will attempt to resume playback from the
   // persistentProgress prop. The ideas is that when switching between
   // different POVs of the same activity we want to play from the same
   // point.
-  const timestamp = `#t=${persistentProgress.current}`;
+  const timestamp = useRef(`#t=${persistentProgress.current}`);
 
   // Check the category state to see if we have a cloud and/or disk
   // copy of this video. These variables refer to the total state of
   // the app rather than the selected video which is still either
   // local or remote.
-  const videoName = videos[0].videoName;
-  const nameMatches = categoryState
-    .flatMap((v) => [v, ...v.multiPov])
-    .filter((v) => v.videoName === videoName);
+  let nameMatches: RendererVideo[] = [];
+
+  if (!instantReplayPath) {
+    const videoName = videos[0].videoName;
+    nameMatches = categoryState
+      .flatMap((v) => [v, ...v.multiPov])
+      .filter((v) => v.videoName === videoName);
+  }
 
   const cloudVideo = nameMatches.find((v) => v.cloud);
   const diskVideo = nameMatches.find((v) => !v.cloud);
   const clippable = !multiPlayerMode;
 
-  // Deliberatly don't update the source when the timestamp changes. That's
-  // just the initial playhead position. We only care to change sources when
-  // the videos we are meant to be playing changes.
-  const srcs = videos.map((rv) => useRef<string>(rv.videoSource + timestamp));
+  const srcs = instantReplayPath
+    ? [instantReplayPath]
+    : videos.map((rv) => rv.videoSource);
 
   // Read and store the video player state of 'volume' and 'muted' so that we may
   // restore it when selecting a different video. This config gets stored as a
@@ -511,7 +521,11 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
   const getMarks = () => {
     const marks: SliderMark[] = [];
 
-    if (duration === 0) {
+    if (instantReplayPath) {
+      return marks;
+    }
+
+    if (duration === 0 || isClip(videos[0])) {
       return marks;
     }
 
@@ -541,6 +555,10 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
   const getActiveMarkers = () => {
     const activeMarkers: VideoMarker[] = [];
 
+    if (instantReplayPath) {
+      return activeMarkers;
+    }
+
     if (isMythicPlusUtil(videos[0]) && config.encounterMarkers) {
       getEncounterMarkers(videos[0]).forEach((m) => activeMarkers.push(m));
     }
@@ -561,7 +579,12 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
     markers: VideoMarker[],
     fillerColor: string,
   ) => {
-    if (!progressSlider.current || duration === 0 || isClip(videos[0])) {
+    if (
+      instantReplayPath ||
+      !progressSlider.current ||
+      duration === 0 ||
+      isClip(videos[0])
+    ) {
       // Initial render shows a flash of the default color without this,
       // and this branch also protects us loading anything on the clips
       // category where the markers are bogus as they are just lifted
@@ -761,6 +784,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
       }
 
       setProgress(player1.current.currentTime);
+      persistentProgress.current = player1.current.currentTime;
     }, 100); // 10fps-ish smooth UI
   };
 
@@ -781,6 +805,11 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
 
     persistentProgress.current = player1.current.currentTime;
     setDuration(player1.current.duration);
+
+    if (instantReplayPath) {
+      setRefreshingInstantReplay(false);
+      setSpinner(false);
+    }
   };
 
   // By default the window hijacks media keys even when
@@ -888,13 +917,16 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
    */
   const onReady = () => {
     numReady.current++;
+    const check = instantReplayPath ? 1 : videos.length;
 
-    if (numReady.current < videos.length) {
+    if (numReady.current < check) {
       // Don't react until all the players have emitted a ready event.
       return;
     }
 
-    setSpinner(false);
+    if (!instantReplayPath) {
+      setSpinner(false);
+    }
   };
 
   /**
@@ -904,7 +936,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
    * retry happen automatically?
    */
   const onError = (e: unknown) => {
-    console.error('Video Player Error', e);
+    console.error('[VideoPlayer] Video Player Error', e);
   };
 
   /**
@@ -976,7 +1008,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
    * Returns the video player itself, passing through all necessary callbacks
    * and props for it to function and be controlled.
    */
-  const renderPlayer = (src: RefObject<string>, index: number) => {
+  const renderPlayer = (src: string, index: number) => {
     const primary = index === 0;
     const player = players[index];
 
@@ -985,9 +1017,8 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
       throw new Error('No player reference');
     }
 
-    const safe = src.current.startsWith('https://')
-      ? src.current
-      : `vod://wcr/${src.current}`;
+    let safe = src.startsWith('https://') ? src : `vod://wcr/${src}`;
+    safe += timestamp.current;
 
     return (
       <ReactPlayer
@@ -996,7 +1027,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
         ref={player}
         height="100%"
         width="100%"
-        key={src.current}
+        key={src}
         src={safe}
         style={style}
         playing={playing}
@@ -1070,12 +1101,17 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
    * Returns the progress text indicator for the video controls.
    */
   const renderProgressText = () => {
-    const max = duration;
+    const elapsed = secToMmSs(progress);
+    let max = secToMmSs(duration);
+
+    if (refreshingInstantReplay) {
+      max = '--:--';
+    }
 
     return (
       <div className="mx-1 flex">
         <span className="whitespace-nowrap text-foreground-lighter text-[11px] font-semibold font-mono">
-          {secToMmSs(progress)} / {secToMmSs(max)}
+          {elapsed} / {max}
         </span>
       </div>
     );
@@ -1482,6 +1518,26 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
     </Tooltip>
   );
 
+  const doInstantReplayRefresh = () => {
+    if (!player1.current) {
+      return;
+    }
+    setPlaying(false);
+    setRefreshingInstantReplay(true);
+    setSpinner(true);
+    player1.current.pause();
+    player1.current.src = `vod://wcr/${instantReplayPath}?${Date.now()}#t=${persistentProgress.current}`;
+    player1.current.load();
+  };
+
+  const renderInstantReplayRefreshButton = () => (
+    <Tooltip content={getLocalePhrase(language, Phrase.InstantReplayRefresh)}>
+      <Button variant="ghost" size="xs" onClick={doInstantReplayRefresh}>
+        <RotateCw size={20} color="white" />
+      </Button>
+    </Tooltip>
+  );
+
   /**
    * Returns the "clear all annotations" button. Disabled when there is nothing
    * to clear; opens a confirmation dialog as the action is destructive.
@@ -1585,22 +1641,40 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
         {renderVolumeSlider()}
         {renderProgressSlider()}
         {renderProgressText()}
-        {!multiPlayerMode && !clipMode && (
+        {!multiPlayerMode && !clipMode && !instantReplayPath && (
           <Separator className="mx-2" orientation="vertical" />
         )}
-        {!multiPlayerMode && !clipMode && renderVideoSourceToggle()}
-        {!multiPlayerMode && !clipMode && (
+        {!multiPlayerMode &&
+          !clipMode &&
+          !instantReplayPath &&
+          renderVideoSourceToggle()}
+        {!multiPlayerMode && !clipMode && !instantReplayPath && (
           <Separator className="mx-2" orientation="vertical" />
         )}
-        {!multiPlayerMode && !clipMode && renderOpenFolderButton()}
-        {!multiPlayerMode && !clipMode && renderGetLinkButton()}
+        {!multiPlayerMode &&
+          !clipMode &&
+          !instantReplayPath &&
+          renderOpenFolderButton()}
+        {!multiPlayerMode &&
+          !clipMode &&
+          !instantReplayPath &&
+          renderGetLinkButton()}
         <Separator className="mx-2" orientation="vertical" />
+        {instantReplayPath && (
+          <>
+            {renderInstantReplayRefreshButton()}
+            <Separator className="mx-2" orientation="vertical" />
+          </>
+        )}
         {!multiPlayerMode && renderDrawingButton()}
         {!multiPlayerMode && renderClearAnnotationsButton()}
         {!multiPlayerMode &&
           (isDrawingEnabled || keyframeMarks.length > 0) &&
           renderAnnotationDurationControl()}
-        {!clipMode && !isClip(videos[0]) && renderClipButton()}
+        {!instantReplayPath &&
+          !clipMode &&
+          !isClip(videos[0]) &&
+          renderClipButton()}
         {!multiPlayerMode && !clipMode && (
           <Separator className="mx-2" orientation="vertical" />
         )}
@@ -1618,14 +1692,19 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, IProps>((props, ref) => {
    * such events, so instead we do this.
    */
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (!player1.current) {
+    if (e.key === 'k' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (player1.current && !e.repeat) {
+        togglePlaying();
+      }
+
       return;
     }
 
-    if (e.key === 'k' || e.key === ' ') {
-      togglePlaying();
-      e.preventDefault();
-      e.stopPropagation();
+    if (!player1.current) {
+      return;
     }
 
     if (e.key === 'j' || e.key === 'ArrowLeft') {

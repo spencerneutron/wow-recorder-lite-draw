@@ -1129,7 +1129,10 @@ const handleSafeVodRequest = async (request: Request) => {
       });
     }
 
-    let filePath = Buffer.from(requestUrl).toString('utf-8').split('#')[0]; // Remove any timestamps, the frontend handles those.
+    let filePath = Buffer.from(requestUrl)
+      .toString('utf-8')
+      .split('#')[0] // Remove any timestamps, the frontend handles those.
+      .split('?')[0]; // Instant replay uses a param as a cache buster.
 
     if (!filePath.endsWith('.mp4')) {
       console.error('[Util] Not an MP4 file:', filePath);

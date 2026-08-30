@@ -342,6 +342,17 @@ type AudioSource = {
   volume: number; // Current volume setting (0-1)
 };
 
+type Character = {
+  name: string;
+  realm: string;
+  specID: number;
+};
+
+type CharacterFilter = {
+  name: string;
+  realm: string;
+};
+
 /**
  * If we should be showing a certain page. This always takes priority over anything
  * else in TNavigatorState.
@@ -350,6 +361,7 @@ enum Pages {
   'None',
   'SceneEditor',
   'Settings',
+  'InstantReplay',
 }
 
 /**
@@ -692,6 +704,11 @@ enum SoundAlerts {
   MANUAL_RECORDING_STOP = 'manual-recording-stop',
 }
 
+type InstantReplayState = {
+  currentPath: string | null;
+  openPath: string | null;
+};
+
 export {
   RecStatus,
   SaveStatus,
@@ -760,4 +777,7 @@ export {
   KillVideoSegment,
   KillVideoStatus,
   RelocateStatus,
+  Character,
+  CharacterFilter,
+  InstantReplayState,
 };
